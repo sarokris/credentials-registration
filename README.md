@@ -112,7 +112,7 @@ Envoy extracts the following claims from JWT and forwards them as headers:
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/sarokris/credentials-registration.git
 cd credentials-app
 
 # Start all services
