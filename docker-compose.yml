@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # 1. The Database (only accessible within Docker network)
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    # NOTE: No ports exposed to host - only accessible within Docker network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d mydb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - auth-net
+
+  mock-oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:latest
+    ports:
+      - "8081:8080"
+    environment:
+      JSON_CONFIG_PATH: /config.json
+    volumes:
+      - ./proxy/mock-oidc-config.json:/config.json:ro
+    networks:
+      - auth-net
+
+  # 3. Spring Boot Backend (only accessible via Envoy)
+  backend_service:
+    build:
+      context: ./backend/credential-manager
+      dockerfile: Dockerfile
+    environment:
+      SPRING_DATASOURCE_HOST: postgres
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    # NOTE: No ports exposed to host - only accessible within Docker network via Envoy
+    # This ensures all external traffic must go through Envoy gateway
+    depends_on:
+      - postgres
+      - mock-oidc
+    networks:
+      - auth-net
+
+  # 4. Envoy Proxy (The Gateway)
+  envoy:
+    build:
+      context: ./proxy
+      dockerfile: Dockerfile
+    ports:
+      - "10000:10000"
+      - "9901:9901"
+    depends_on:
+      - backend_service
+      - mock-oidc
+    networks:
+      - auth-net
+
+networks:
+  auth-net:
+    driver: bridge
+
+volumes:
+  postgres_data:

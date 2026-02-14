@@ -1,0 +1,52 @@
+{
+  "interactiveLogin": false,
+  "tokenCallbacks": [
+    {
+      "issuerId": "default",
+      "tokenExpiry": 3600,
+      "requestMappings": [
+        {
+          "requestParam": "client_id",
+          "match": "admin-user",
+          "claims": {
+            "sub": "admin-123",
+            "email": "admin@test.com",
+            "name": "Admin User",
+            "roles": ["admin", "user"]
+          }
+        },
+        {
+          "requestParam": "client_id",
+          "match": "regular-user",
+          "claims": {
+            "sub": "user-456",
+            "email": "user@test.com",
+            "name": "Regular User",
+            "roles": ["user"],
+            "organization": "AH"
+          }
+        },
+        {
+          "requestParam": "client_id",
+          "match": "saravanan",
+          "claims": {
+            "sub": "saravanan-789",
+            "email": "saravanan@test.com",
+            "name": "Saravanan",
+            "roles": ["admin", "user", "developer"]
+          }
+        },
+        {
+          "requestParam": "client_id",
+          "match": ".*",
+          "claims": {
+            "sub": "default-user",
+            "email": "default@test.com",
+            "name": "Default User",
+            "roles": ["user"]
+          }
+        }
+      ]
+    }
+  ]
+}

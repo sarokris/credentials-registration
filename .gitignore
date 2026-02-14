@@ -1,0 +1,40 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Build outputs
+target/
+*.jar
+*.war
+*.class
+
+# Logs
+*.log
+test_run.log
+
+# Maven
+.mvn/repository/
+
+# Docker
+docker
+
+# Environment
+.env
+.env.local
+
+# Node modules (if any frontend)
+node_modules/
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Postgres data (if local)
+postgres_data/
