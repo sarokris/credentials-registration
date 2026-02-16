@@ -20,7 +20,9 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.containers.wait.strategy.Wait;
 
 import java.time.Duration;
@@ -64,8 +66,14 @@ class UserControllerTest {
             .withStartupTimeout(Duration.ofSeconds(60))
             .waitingFor(Wait.forListeningPort());
 
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
+            .withExposedPorts(6379)
+            .withStartupTimeout(Duration.ofSeconds(60))
+            .waitingFor(Wait.forListeningPort());
+
     static {
         postgres.start();
+        redis.start();
     }
 
     @DynamicPropertySource
@@ -79,6 +87,8 @@ class UserControllerTest {
         registry.add("spring.datasource.hikari.minimum-idle", () -> "2");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
         registry.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
+        registry.add("spring.data.redis.host", redis::getHost);
+        registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
     }
 
     private Organization org1;

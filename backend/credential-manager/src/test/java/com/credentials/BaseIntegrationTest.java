@@ -11,6 +11,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 
@@ -31,8 +32,14 @@ public abstract class BaseIntegrationTest {
             .withStartupTimeout(Duration.ofSeconds(60))
             .waitingFor(Wait.forListeningPort());
 
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
+            .withExposedPorts(6379)
+            .withStartupTimeout(Duration.ofSeconds(60))
+            .waitingFor(Wait.forListeningPort());
+
     static {
         postgres.start();
+        redis.start();
     }
 
     @DynamicPropertySource
@@ -46,6 +53,8 @@ public abstract class BaseIntegrationTest {
         registry.add("spring.datasource.hikari.minimum-idle", () -> "2");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
         registry.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
+        registry.add("spring.data.redis.host", redis::getHost);
+        registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
     }
 
 	@Autowired

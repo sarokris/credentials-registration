@@ -403,16 +403,21 @@ fi
 echo ""
 
 ##############################################################################
-# Step 4.1: First-Time Login Flow
+# Step 4.1: Login Flow with Session Management
 ##############################################################################
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}Step 4.1: First-Time Login - Get Available Organizations${NC}"
+echo -e "${YELLOW}Step 4.1: Login Flow with Session Management (Redis)${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 LOGIN_API_URL="$ENVOY_URL$CONTEXT_PATH/api/v1/users/login"
+SESSION_API_URL="$ENVOY_URL$CONTEXT_PATH/api/v1/session"
+COOKIE_FILE="/tmp/integration_test_cookies_$$"
 
-# Step 4.1.1: First login without org selection
+# Clean up old cookie file
+rm -f "$COOKIE_FILE"
+
+# Step 4.1.1: First login (get available organizations)
 echo -e "  ${YELLOW}Step 4.1.1: First login (get available organizations)${NC}"
 echo "  Calling: POST $LOGIN_API_URL"
 echo ""
@@ -426,9 +431,11 @@ echo "  Request Body:"
 echo "$LOGIN_REQUEST_BODY" | jq . 2>/dev/null
 echo ""
 
+# Login and capture session cookie
 LOGIN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$LOGIN_API_URL" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
+  -c "$COOKIE_FILE" \
   -d "$LOGIN_REQUEST_BODY")
 
 LOGIN_HTTP_CODE=$(echo "$LOGIN_RESPONSE" | tail -1)
@@ -455,13 +462,19 @@ if [ "$LOGIN_HTTP_CODE" = "200" ]; then
   echo "    requiresOrgSelection: $REQUIRES_ORG_SELECTION"
   echo "    availableOrgs count: $AVAILABLE_ORGS_COUNT"
   echo "    associatedOrgs count: $ASSOCIATED_ORGS_COUNT"
+
+  # Show session cookie
+  if [ -f "$COOKIE_FILE" ]; then
+    SESSION_COOKIE=$(grep -i "SESSION" "$COOKIE_FILE" | awk '{print $NF}' | head -1)
+    echo "    Session Cookie: ${SESSION_COOKIE:0:20}..."
+  fi
 else
   echo -e "  ${RED}✗ Login API call failed${NC}"
   echo "  Response: $LOGIN_RESPONSE_BODY"
 fi
 echo ""
 
-# Step 4.1.2: Select organization and complete registration
+# Step 4.1.2: Select Organization and Complete Registration (if first-time user)
 echo -e "  ${YELLOW}Step 4.1.2: Select Organization and Complete Registration${NC}"
 echo ""
 
@@ -492,15 +505,15 @@ else
   echo "    Name: $SELECTED_ORG_NAME"
   echo ""
 
-  # Complete registration if first-time login OR requires org selection with available orgs
-  if [ "$SKIP_REGISTRATION" != "true" ] && ([ "$IS_FIRST_LOGIN" = "true" ] || [ "$REQUIRES_ORG_SELECTION" = "true" ]); then
+  # Complete registration if first-time login with available orgs
+  if [ "$SKIP_REGISTRATION" != "true" ] && [ "$IS_FIRST_LOGIN" = "true" ] && [ "$AVAILABLE_ORGS_COUNT" -gt 0 ] 2>/dev/null; then
     REGISTER_REQUEST='{
       "firstName": "Test",
       "lastName": "User",
-      "selectedOrgIds": ["'$SELECTED_ORG_ID'"]
+      "associateWithOrgIds": ["'$SELECTED_ORG_ID'"]
     }'
 
-    echo "  Completing registration with org selection..."
+    echo "  Completing registration with org association..."
     echo "  Request Body:"
     echo "$REGISTER_REQUEST" | jq . 2>/dev/null
     echo ""
@@ -508,6 +521,7 @@ else
     REGISTER_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$LOGIN_API_URL" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
       -H "Content-Type: application/json" \
+      -c "$COOKIE_FILE" \
       -d "$REGISTER_REQUEST")
 
     REGISTER_HTTP_CODE=$(echo "$REGISTER_RESPONSE" | tail -1)
@@ -532,55 +546,107 @@ else
 fi
 echo ""
 
-# Step 4.1.3: Re-login with x-org-id header
-echo -e "  ${YELLOW}Step 4.1.3: Re-login with x-org-id header (session context)${NC}"
+# Step 4.1.3: Select Organization for Session (via /api/v1/session/org)
+echo -e "  ${YELLOW}Step 4.1.3: Select Organization for Session (POST /api/v1/session/org)${NC}"
+echo ""
+
+if [ "$SKIP_REMAINING_TESTS" != "true" ] && [ "$REQUIRES_ORG_SELECTION" = "true" ]; then
+  ORG_SELECT_REQUEST='{"organizationId": "'$SELECTED_ORG_ID'"}'
+
+  echo "  Calling: POST $SESSION_API_URL/org"
+  echo "  Request Body: $ORG_SELECT_REQUEST"
+  echo "  Using session cookie from login"
+  echo ""
+
+  ORG_SELECT_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$SESSION_API_URL/org" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json" \
+    -b "$COOKIE_FILE" \
+    -c "$COOKIE_FILE" \
+    -d "$ORG_SELECT_REQUEST")
+
+  ORG_SELECT_HTTP_CODE=$(echo "$ORG_SELECT_RESPONSE" | tail -1)
+  ORG_SELECT_BODY=$(echo "$ORG_SELECT_RESPONSE" | sed '$d')
+
+  echo "  HTTP Status: $ORG_SELECT_HTTP_CODE"
+  if [ "$ORG_SELECT_HTTP_CODE" = "200" ]; then
+    echo -e "  ${GREEN}✓ Organization selected for session${NC}"
+    echo "  Response:"
+    echo "$ORG_SELECT_BODY" | jq . 2>/dev/null
+    ORG_SELECT_TEST_PASSED=true
+
+    # Verify session has org selected
+    SESSION_ORG_ID=$(echo "$ORG_SELECT_BODY" | jq -r '.selectedOrgId' 2>/dev/null)
+    SESSION_ORG_NAME=$(echo "$ORG_SELECT_BODY" | jq -r '.selectedOrgName' 2>/dev/null)
+    SESSION_ORG_REQUIRED=$(echo "$ORG_SELECT_BODY" | jq -r '.orgSelectionRequired' 2>/dev/null)
+
+    echo ""
+    echo "  Session Verification:"
+    echo "    selectedOrgId: $SESSION_ORG_ID"
+    echo "    selectedOrgName: $SESSION_ORG_NAME"
+    echo "    orgSelectionRequired: $SESSION_ORG_REQUIRED"
+
+    if [ "$SESSION_ORG_REQUIRED" = "false" ]; then
+      echo -e "    ${GREEN}✓ Organization selection complete${NC}"
+    fi
+  else
+    echo -e "  ${RED}✗ Organization selection failed${NC}"
+    echo "  Response: $ORG_SELECT_BODY"
+    ORG_SELECT_TEST_PASSED=false
+  fi
+elif [ "$SKIP_REMAINING_TESTS" != "true" ]; then
+  echo "  Organization already selected (single org user or auto-selected)"
+  ORG_SELECT_TEST_PASSED=true
+fi
+echo ""
+
+# Step 4.1.4: Verify Session State (GET /api/v1/session)
+echo -e "  ${YELLOW}Step 4.1.4: Verify Session State (GET /api/v1/session)${NC}"
 echo ""
 
 if [ "$SKIP_REMAINING_TESTS" != "true" ]; then
-  echo "  Headers:"
-  echo "    Authorization: Bearer ${ACCESS_TOKEN:0:30}..."
-  echo "    x-org-id: $SELECTED_ORG_ID"
+  echo "  Calling: GET $SESSION_API_URL"
+  echo "  Using session cookie"
   echo ""
 
-  RELOGIN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$LOGIN_API_URL" \
+  SESSION_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$SESSION_API_URL" \
     -H "Authorization: Bearer $ACCESS_TOKEN" \
-    -H "x-org-id: $SELECTED_ORG_ID" \
     -H "Content-Type: application/json" \
-    -d "$LOGIN_REQUEST_BODY")
+    -b "$COOKIE_FILE")
 
-  RELOGIN_HTTP_CODE=$(echo "$RELOGIN_RESPONSE" | tail -1)
-  RELOGIN_BODY=$(echo "$RELOGIN_RESPONSE" | sed '$d')
+  SESSION_HTTP_CODE=$(echo "$SESSION_RESPONSE" | tail -1)
+  SESSION_BODY=$(echo "$SESSION_RESPONSE" | sed '$d')
 
-  echo "  HTTP Status: $RELOGIN_HTTP_CODE"
-  if [ "$RELOGIN_HTTP_CODE" = "200" ]; then
-    echo -e "  ${GREEN}✓ Re-login successful${NC}"
+  echo "  HTTP Status: $SESSION_HTTP_CODE"
+  if [ "$SESSION_HTTP_CODE" = "200" ]; then
+    echo -e "  ${GREEN}✓ Session retrieved successfully${NC}"
     echo "  Response:"
-    echo "$RELOGIN_BODY" | jq . 2>/dev/null
-    echo ""
-    RELOGIN_REQUIRES_ORG=$(echo "$RELOGIN_BODY" | jq -r '.requiresOrgSelection' 2>/dev/null)
-    if [ "$RELOGIN_REQUIRES_ORG" = "false" ]; then
-      echo -e "  ${GREEN}✓ Session org is set (requiresOrgSelection: false)${NC}"
-    fi
+    echo "$SESSION_BODY" | jq . 2>/dev/null
+    SESSION_VERIFY_TEST_PASSED=true
   else
-    echo -e "  ${RED}✗ Re-login failed${NC}"
-    echo "  Response: $RELOGIN_BODY"
+    echo -e "  ${RED}✗ Failed to retrieve session${NC}"
+    echo "  Response: $SESSION_BODY"
+    SESSION_VERIFY_TEST_PASSED=false
   fi
 fi
 echo ""
 
 ##############################################################################
-# Step 4.2: Credential CRUD Operations
+# Step 4.2: Credential CRUD Operations (Using Session Cookie)
 ##############################################################################
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}Step 4.2: Credential CRUD Operations${NC}"
+echo -e "${YELLOW}Step 4.2: Credential CRUD Operations (Using Session)${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 if [ "$SKIP_REMAINING_TESTS" != "true" ] && [ -n "$SELECTED_ORG_ID" ] && [ "$SELECTED_ORG_ID" != "null" ]; then
   CREDS_API_URL="$ENVOY_URL$CONTEXT_PATH/api/v1/credentials"
 
+  echo "  Note: Using session cookie for org context (stored in Redis)"
+  echo ""
+
   # ─────────────────────────────────────────────────────────────────────────
-  # Test 4.2.1: CREATE Credential
+  # Test 4.2.1: CREATE Credential (using session)
   # ─────────────────────────────────────────────────────────────────────────
   echo -e "  ${YELLOW}Test 4.2.1: CREATE Credential${NC}"
   echo ""
@@ -592,14 +658,14 @@ if [ "$SKIP_REMAINING_TESTS" != "true" ] && [ -n "$SELECTED_ORG_ID" ] && [ "$SEL
   }'
 
   echo "    POST $CREDS_API_URL"
-  echo "    x-org-id: $SELECTED_ORG_ID"
+  echo "    Using session cookie (org context from Redis session)"
   echo "    Body: $CREATE_CRED_BODY"
   echo ""
 
   CREATE_CRED_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$CREDS_API_URL" \
     -H "Authorization: Bearer $ACCESS_TOKEN" \
-    -H "x-org-id: $SELECTED_ORG_ID" \
     -H "Content-Type: application/json" \
+    -b "$COOKIE_FILE" \
     -d "$CREATE_CRED_BODY")
 
   CREATE_CRED_HTTP_CODE=$(echo "$CREATE_CRED_RESPONSE" | tail -1)
@@ -631,12 +697,13 @@ if [ "$SKIP_REMAINING_TESTS" != "true" ] && [ -n "$SELECTED_ORG_ID" ] && [ "$SEL
     echo ""
 
     echo "    GET $CREDS_API_URL/$CREATED_CRED_ID"
+    echo "    Using session cookie"
     echo ""
 
     GET_CRED_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$CREDS_API_URL/$CREATED_CRED_ID" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
-      -H "x-org-id: $SELECTED_ORG_ID" \
-      -H "Content-Type: application/json")
+      -H "Content-Type: application/json" \
+      -b "$COOKIE_FILE")
 
     GET_CRED_HTTP_CODE=$(echo "$GET_CRED_RESPONSE" | tail -1)
     GET_CRED_BODY=$(echo "$GET_CRED_RESPONSE" | sed '$d')
@@ -672,12 +739,13 @@ if [ "$SKIP_REMAINING_TESTS" != "true" ] && [ -n "$SELECTED_ORG_ID" ] && [ "$SEL
     echo ""
 
     echo "    PATCH $CREDS_API_URL/$CREATED_CRED_ID/reset-secret"
+    echo "    Using session cookie"
     echo ""
 
     RESET_CRED_RESPONSE=$(curl -s -w "\n%{http_code}" -X PATCH "$CREDS_API_URL/$CREATED_CRED_ID/reset-secret" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
-      -H "x-org-id: $SELECTED_ORG_ID" \
-      -H "Content-Type: application/json")
+      -H "Content-Type: application/json" \
+      -b "$COOKIE_FILE")
 
     RESET_CRED_HTTP_CODE=$(echo "$RESET_CRED_RESPONSE" | tail -1)
     RESET_CRED_BODY=$(echo "$RESET_CRED_RESPONSE" | sed '$d')
@@ -714,12 +782,13 @@ if [ "$SKIP_REMAINING_TESTS" != "true" ] && [ -n "$SELECTED_ORG_ID" ] && [ "$SEL
     echo ""
 
     echo "    DELETE $CREDS_API_URL/$CREATED_CRED_ID"
+    echo "    Using session cookie"
     echo ""
 
     DELETE_CRED_RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE "$CREDS_API_URL/$CREATED_CRED_ID" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
-      -H "x-org-id: $SELECTED_ORG_ID" \
-      -H "Content-Type: application/json")
+      -H "Content-Type: application/json" \
+      -b "$COOKIE_FILE")
 
     DELETE_CRED_HTTP_CODE=$(echo "$DELETE_CRED_RESPONSE" | tail -1)
 
@@ -742,12 +811,13 @@ if [ "$SKIP_REMAINING_TESTS" != "true" ] && [ -n "$SELECTED_ORG_ID" ] && [ "$SEL
 
     echo "    GET $CREDS_API_URL/$CREATED_CRED_ID"
     echo "    Expected: HTTP 404"
+    echo "    Using session cookie"
     echo ""
 
     GET_DELETED_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$CREDS_API_URL/$CREATED_CRED_ID" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
-      -H "x-org-id: $SELECTED_ORG_ID" \
-      -H "Content-Type: application/json")
+      -H "Content-Type: application/json" \
+      -b "$COOKIE_FILE")
 
     GET_DELETED_HTTP_CODE=$(echo "$GET_DELETED_RESPONSE" | tail -1)
     GET_DELETED_BODY=$(echo "$GET_DELETED_RESPONSE" | sed '$d')
@@ -864,12 +934,21 @@ else
   ((TESTS_FAILED++))
 fi
 
-# Check re-login with org context
-if [ "$RELOGIN_HTTP_CODE" = "200" ]; then
-  echo -e "  ${GREEN}✓${NC} Re-login with x-org-id successful"
+# Check org selection via session API
+if [ "$ORG_SELECT_TEST_PASSED" = "true" ]; then
+  echo -e "  ${GREEN}✓${NC} POST /api/v1/session/org - org selection successful"
   ((TESTS_PASSED++))
 else
-  echo -e "  ${RED}✗${NC} Re-login with x-org-id failed"
+  echo -e "  ${RED}✗${NC} POST /api/v1/session/org - org selection failed"
+  ((TESTS_FAILED++))
+fi
+
+# Check session verification
+if [ "$SESSION_VERIFY_TEST_PASSED" = "true" ]; then
+  echo -e "  ${GREEN}✓${NC} GET /api/v1/session - session verified"
+  ((TESTS_PASSED++))
+else
+  echo -e "  ${RED}✗${NC} GET /api/v1/session - session verification failed"
   ((TESTS_FAILED++))
 fi
 
@@ -946,3 +1025,7 @@ echo "  ./integration-test.sh admin-user      # Admin with admin,user roles"
 echo "  ./integration-test.sh regular-user    # Regular user with user role"
 echo "  ./integration-test.sh saravanan       # Saravanan with admin,user,developer roles"
 echo ""
+
+# Cleanup
+rm -f "$COOKIE_FILE" 2>/dev/null
+

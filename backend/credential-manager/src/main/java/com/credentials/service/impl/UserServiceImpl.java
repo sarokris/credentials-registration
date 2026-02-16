@@ -5,6 +5,7 @@ import com.credentials.dto.LoginResponse;
 import com.credentials.dto.RequestUserContext;
 import com.credentials.dto.UserDto;
 import com.credentials.dto.UserLoginRequest;
+import com.credentials.dto.UserSessionData;
 import com.credentials.entity.Organization;
 import com.credentials.entity.User;
 import com.credentials.exception.UserNotFoundException;
@@ -12,10 +13,10 @@ import com.credentials.mapper.OrganizationMapper;
 import com.credentials.mapper.UserMapper;
 import com.credentials.repo.OrganizationRepository;
 import com.credentials.repo.UserRepository;
+import com.credentials.service.SessionService;
 import com.credentials.service.UserService;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 
 import java.util.HashSet;
@@ -32,6 +33,7 @@ public class UserServiceImpl implements UserService {
     private final OrganizationRepository orgRepo;
     private final OrganizationMapper organizationMapper;
     private final UserMapper userMapper;
+    private final SessionService sessionService;
 
     @Transactional
     public LoginResponse processUserLogin(UserLoginRequest request) {
@@ -51,11 +53,19 @@ public class UserServiceImpl implements UserService {
     private LoginResponse handleUserRelogin(User user, String email) {
         // CASE 2: Returning User
         Set<Organization> userOrgs = user.getOrganizations();
+        List<UUID> orgIds = userOrgs.stream().map(Organization::getId).toList();
+
+        // Create session in Redis
+        UserSessionData sessionData = sessionService.createSession(
+                user.getId(),
+                user.getSubjectId(),
+                email,
+                orgIds
+        );
 
         if (userOrgs.size() == 1) {
-            // CASE 2A: User has only one organization - use it seamlessly
+            // CASE 2A: User has only one organization - auto-selected in session
             Organization singleOrg = userOrgs.iterator().next();
-            RequestContextHolder.get().setSelectedOrgId(singleOrg.getId().toString());
             return LoginResponse.builder()
                     .email(email)
                     .isFirstLogin(false)
@@ -64,37 +74,22 @@ public class UserServiceImpl implements UserService {
                     .associatedOrgs(userOrgs.stream().map(organizationMapper::toDto).toList())
                     .build();
         } else {
-            // CASE 2B: User has multiple organizations - check if org is already selected via header
-            String selectedOrgId = RequestContextHolder.get().getSelectedOrgId();
-            boolean orgIdSelectionRequired = StringUtils.isBlank(selectedOrgId);
-
-            if (orgIdSelectionRequired) {
-                // User needs to select an organization
-                return LoginResponse.builder()
-                        .email(email)
-                        .isFirstLogin(false)
-                        .requiresOrgSelection(true)
-                        .message("Please select an organization for this session via 'x-org-id' header")
-                        .availableOrgs(userOrgs.stream().map(organizationMapper::toDto).toList())
-                        .build();
-            } else {
-                // Organization already selected via header - validate and proceed
-                return LoginResponse.builder()
-                        .email(email)
-                        .isFirstLogin(false)
-                        .requiresOrgSelection(false)
-                        .message("Welcome back! Organization set for this session")
-                        .associatedOrgs(userOrgs.stream().map(organizationMapper::toDto).toList())
-                        .build();
-            }
+            // CASE 2B: User has multiple organizations - needs to select via /session/select-org
+            return LoginResponse.builder()
+                    .email(email)
+                    .isFirstLogin(false)
+                    .requiresOrgSelection(true)
+                    .message("Please select an organization for this session via POST /api/v1/session/select-org")
+                    .availableOrgs(userOrgs.stream().map(organizationMapper::toDto).toList())
+                    .build();
         }
     }
 
     private LoginResponse handleFirstTimeLogin(UserLoginRequest request, String subjectId, String email) {
         // CASE 1: First Time Login - New user not seen before
 
-        // CASE 1A: No org selection provided - return available orgs for selection
-        if (request == null || request.selectedOrgIds() == null || request.selectedOrgIds().isEmpty()) {
+        // CASE 1A: No org association provided - return available orgs for selection
+        if (request == null || request.associateWithOrgIds() == null || request.associateWithOrgIds().isEmpty()) {
             return LoginResponse.builder()
                     .email(email)
                     .isFirstLogin(true)
@@ -104,11 +99,11 @@ public class UserServiceImpl implements UserService {
                     .build();
         }
 
-        // CASE 1B: Org selection provided - create user and associate orgs
-        Set<Organization> selectedOrgs = new HashSet<>(orgRepo.findAllById(request.selectedOrgIds()));
+        // CASE 1B: Org association provided - create user and associate orgs
+        Set<Organization> orgsToAssociate = new HashSet<>(orgRepo.findAllById(request.associateWithOrgIds()));
 
         // Validate all provided org IDs exist
-        if (selectedOrgs.size() != request.selectedOrgIds().size()) {
+        if (orgsToAssociate.size() != request.associateWithOrgIds().size()) {
             throw new IllegalArgumentException("One or more organization IDs are invalid");
         }
 
@@ -119,23 +114,24 @@ public class UserServiceImpl implements UserService {
         newUser.setName(request.firstName());
         newUser.setFirstName(request.firstName());
         newUser.setLastName(request.lastName());
-        newUser.setOrganizations(selectedOrgs);
-        userRepo.save(newUser);
+        newUser.setOrganizations(orgsToAssociate);
+        User savedUser = userRepo.save(newUser);
 
-        // If user selected only one org, set it as session org automatically
-        boolean requiresOrgSelection = selectedOrgs.size() > 1;
-        if (!requiresOrgSelection) {
-            RequestContextHolder.get().setSelectedOrgId(selectedOrgs.iterator().next().getId().toString());
-        }
+        // Create session in Redis
+        List<UUID> orgIds = orgsToAssociate.stream().map(Organization::getId).toList();
+        sessionService.createSession(savedUser.getId(), subjectId, email, orgIds);
+
+        // Determine if session org selection is needed (user associated with multiple orgs)
+        boolean requiresOrgSelection = orgsToAssociate.size() > 1;
 
         return LoginResponse.builder()
                 .email(email)
                 .isFirstLogin(true)
                 .requiresOrgSelection(requiresOrgSelection)
                 .message(requiresOrgSelection
-                        ? "Account created. Please select an organization for this session via 'x-org-id' header"
+                        ? "Account created. Please select an organization for this session via POST /api/v1/session/select-org"
                         : "Account created and organization set for session")
-                .associatedOrgs(selectedOrgs.stream().map(organizationMapper::toDto).toList())
+                .associatedOrgs(orgsToAssociate.stream().map(organizationMapper::toDto).toList())
                 .build();
     }
 

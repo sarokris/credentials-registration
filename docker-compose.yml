@@ -20,6 +20,21 @@ services:
     networks:
       - auth-net
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - auth-net
+
   mock-oidc:
     image: ghcr.io/navikt/mock-oauth2-server:latest
     ports:
@@ -40,10 +55,13 @@ services:
       SPRING_DATASOURCE_HOST: postgres
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
     # NOTE: No ports exposed to host - only accessible within Docker network via Envoy
     # This ensures all external traffic must go through Envoy gateway
     depends_on:
       - postgres
+      - redis
       - mock-oidc
     networks:
       - auth-net
@@ -68,3 +86,4 @@ networks:
 
 volumes:
   postgres_data:
+  redis_data:

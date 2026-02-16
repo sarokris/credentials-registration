@@ -8,6 +8,7 @@ import java.util.List;
 @Data
 @Builder
 public class LoginResponse {
+    private String sessionId;  // Session ID (also sent as cookie)
     private String email;
     private boolean isFirstLogin;
     private boolean requiresOrgSelection; // true if user has multiple orgs and needs to choose

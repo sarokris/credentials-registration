@@ -21,7 +21,11 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .addPathPatterns("/api/**")  // Apply to all API endpoints
                 .excludePathPatterns(
                         "/api/v1/users/login",      // Exclude login endpoint
-                        "/api/v1/users", // Exclude users listing
+                        "/api/v1/users",            // Exclude users listing (admin)
+                        "/api/v1/users/**",         // Exclude user endpoints
+                        "/api/v1/session/**",       // Exclude session endpoints (org selection, logout)
+                        "/api/v1/organizations",    // Exclude org listing
+                        "/api/v1/organizations/**", // Exclude org endpoints
                         "/swagger-ui/**",           // Exclude Swagger
                         "/v3/api-docs/**"           // Exclude OpenAPI docs
                 );

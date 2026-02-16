@@ -1,6 +1,16 @@
 spring:
   application:
     name: credential-manager
+  session:
+    store-type: redis
+    redis:
+      flush-mode: on_save
+      namespace: credential-manager:session
+    timeout: 30m
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6379}
   datasource:
     url: jdbc:postgresql://${SPRING_DATASOURCE_HOST:localhost}:5432/mydb
     username: ${POSTGRES_USER:postgres}
@@ -15,3 +25,8 @@ spring:
 server:
   servlet:
     context-path: /credential-manager
+    session:
+      cookie:
+        name: CREDENTIAL_SESSION
+        http-only: true
+        secure: false

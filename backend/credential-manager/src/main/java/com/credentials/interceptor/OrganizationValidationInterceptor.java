@@ -1,73 +1,56 @@
 package com.credentials.interceptor;
 
-import com.credentials.bootstrap.RequestContextHolder;
-import com.credentials.dto.RequestUserContext;
-import com.credentials.entity.User;
+import com.credentials.dto.UserSessionData;
 import com.credentials.exception.CredentialProcessingException;
-import com.credentials.repo.UserRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
-import java.util.Optional;
-import java.util.UUID;
-
 /**
- * Interceptor responsible for validating organization membership
- * and other business logic validations after authentication.
- * This runs AFTER the filter but BEFORE the controller,
- * keeping authentication and authorization concerns separated.
+ * Interceptor responsible for validating that users with multiple organizations
+ * have selected an organization for their session before accessing protected resources.
+ *
+ * This runs AFTER the filter but BEFORE the controller.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OrganizationValidationInterceptor implements HandlerInterceptor {
 
-    private final UserRepository userRepo;
+    private static final String SESSION_USER_DATA = "USER_SESSION_DATA";
 
     @Override
     public boolean preHandle(HttpServletRequest request,
                             HttpServletResponse response,
-                            Object handler)  {
+                            Object handler) {
 
-        RequestUserContext context = RequestContextHolder.get();
+        HttpSession session = request.getSession(false);
+        if (session == null) {
+            throw new CredentialProcessingException("No active session. Please login first.");
+        }
 
-        // Skip validation if no user context (anonymous request)
-        if (context == null ) {
+        UserSessionData sessionData = (UserSessionData) session.getAttribute(SESSION_USER_DATA);
+        if (sessionData == null) {
+            throw new CredentialProcessingException("Session data not found. Please login again.");
+        }
+
+        // Validate organization is selected for users with multiple orgs
+        if (sessionData.isOrgSelectionRequired() && sessionData.getSelectedOrgId() == null) {
             throw new CredentialProcessingException(
-                    " Operation not allowed Please login ");
+                "Organization selection required. Please call POST /api/v1/session/org first.");
         }
 
-        String subjectId = context.getSubjectId();
-        String orgId = context.getSelectedOrgId();
-
-        Optional<User> loggedInUser = userRepo.findBySubjectId(subjectId);
-
-        // Validate: Returning user with multiple orgs MUST provide org context
-        if (loggedInUser.isPresent()
-                && StringUtils.isBlank(orgId)
-                && loggedInUser.get().getOrganizations().size() > 1) {
-
-
+        if (sessionData.getSelectedOrgId() == null) {
             throw new CredentialProcessingException(
-                "Organization context is required for users with multiple organizations. " +
-                "Please provide 'x-org-id' header.");
+                "No organization selected for this session. Please call POST /api/v1/session/org.");
         }
 
-        // Validate: If org ID is provided, user must be a member
-        if (StringUtils.isNotBlank(orgId)) {
-            boolean isValid = userRepo.isUserMemberOfOrg(subjectId, UUID.fromString(orgId));
-
-            if (!isValid) {
-                throw new CredentialProcessingException(
-                    "User with subject ID: " + subjectId +
-                    " is not a member of organization with ID: " + orgId);
-            }
-        }
+        log.debug("Session validated - userId: {}, selectedOrgId: {}",
+                sessionData.getUserId(), sessionData.getSelectedOrgId());
 
         return true;
     }

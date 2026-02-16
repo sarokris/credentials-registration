@@ -4,6 +4,7 @@ import com.credentials.dto.LoginResponse;
 import com.credentials.dto.UserDto;
 import com.credentials.dto.UserLoginRequest;
 import com.credentials.service.UserService;
+import jakarta.servlet.http.HttpSession;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -22,9 +23,23 @@ public class UserController {
 
     private final UserService userService;
 
+    /**
+     * Login endpoint. Creates a session and returns session cookie.
+     *
+     * Headers required (from auth proxy):
+     * - x-user-sub: Subject ID from identity provider
+     * - x-user-email: User's email
+     *
+     * Response includes:
+     * - Set-Cookie: SESSION_ID=xxx (automatically by Spring Session)
+     * - sessionId in response body
+     */
     @PostMapping("/login")
-    public LoginResponse login(@RequestBody UserLoginRequest request) {
-        return userService.processUserLogin(request);
+    public LoginResponse login(@RequestBody(required = false) UserLoginRequest request,
+                               HttpSession session) {
+        LoginResponse response = userService.processUserLogin(request);
+        response.setSessionId(session.getId());
+        return response;
     }
 
     @GetMapping
